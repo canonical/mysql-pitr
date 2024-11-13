@@ -17,8 +17,8 @@ import (
 	"github.com/go-sql-driver/mysql"
 	"github.com/pkg/errors"
 
-	"mysql-pitr-helper/pkg/pxc/backup/storage"
 	"mysql-pitr-helper/pxc"
+	"mysql-pitr-helper/storage"
 )
 
 type Collector struct {
