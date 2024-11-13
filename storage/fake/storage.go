@@ -5,7 +5,7 @@ import (
 	"errors"
 	"io"
 
-	"github.com/percona/percona-xtradb-cluster-operator/pkg/pxc/backup/storage"
+	"mysql-pitr-helper/storage"
 )
 
 func NewFakeClient(ctx context.Context, opts storage.Options) (storage.Storage, error) {
