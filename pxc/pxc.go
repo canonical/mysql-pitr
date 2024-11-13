@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"log"
-	"os/exec"
 	"sort"
 	"strconv"
 	"strings"
@@ -225,57 +224,18 @@ func (p *PXC) SubtractGTIDSet(ctx context.Context, set, subSet string) (string, 
 	return result, nil
 }
 
-func getNodesByServiceName(ctx context.Context, pxcServiceName string) ([]string, error) {
-	cmd := exec.CommandContext(ctx, "/opt/percona/peer-list", "-on-start=/usr/bin/get-pxc-state", "-service="+pxcServiceName)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return nil, errors.Wrap(err, "get peer-list output")
-	}
-	return strings.Split(string(out), "node:"), nil
-}
-
-func GetPXCFirstHost(ctx context.Context, pxcServiceName string) (string, error) {
-	nodes, err := getNodesByServiceName(ctx, pxcServiceName)
-	if err != nil {
-		return "", errors.Wrap(err, "get nodes by service name")
-	}
-	sort.Strings(nodes)
-	lastHost := ""
-	for _, node := range nodes {
-		if strings.Contains(node, "wsrep_ready:ON:wsrep_connected:ON:wsrep_local_state_comment:Synced:wsrep_cluster_status:Primary") {
-			nodeArr := strings.Split(node, ":")
-			lastHost = nodeArr[0]
-			break
-		}
-	}
-	if len(lastHost) == 0 {
-		return "", errors.New("can't find host")
-	}
-
-	return lastHost, nil
-}
-
-func GetPXCOldestBinlogHost(ctx context.Context, pxcServiceName, user, pass string) (string, error) {
-	nodes, err := getNodesByServiceName(ctx, pxcServiceName)
-	if err != nil {
-		return "", errors.Wrap(err, "get nodes by service name")
-	}
-
+func GetPXCOldestBinlogHost(ctx context.Context, hosts []string, user, pass string) (string, error) {
 	var oldestHost string
 	var oldestTS int64
-	for _, node := range nodes {
-		if strings.Contains(node, "wsrep_ready:ON:wsrep_connected:ON:wsrep_local_state_comment:Synced:wsrep_cluster_status:Primary") {
-			nodeArr := strings.Split(node, ":")
-			binlogTime, err := getBinlogTime(ctx, nodeArr[0], user, pass)
-			if err != nil {
-				log.Printf("ERROR: get binlog time %v", err)
-				continue
-			}
-			if len(oldestHost) == 0 || oldestTS > 0 && binlogTime < oldestTS {
-				oldestHost = nodeArr[0]
-				oldestTS = binlogTime
-			}
-
+	for _, host := range hosts {
+		binlogTime, err := getBinlogTime(ctx, host, user, pass)
+		if err != nil {
+			log.Printf("ERROR: get binlog time %v", err)
+			continue
+		}
+		if len(oldestHost) == 0 || oldestTS > 0 && binlogTime < oldestTS {
+			oldestHost = host
+			oldestTS = binlogTime
 		}
 	}
 

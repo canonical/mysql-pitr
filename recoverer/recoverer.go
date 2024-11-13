@@ -23,10 +23,10 @@ type Recoverer struct {
 	db             *pxc.PXC
 	recoverTime    string
 	storage        storage.Storage
-	pxcUser        string
-	pxcPass        string
+	host           string
+	user           string
+	pass           string
 	recoverType    RecoverType
-	pxcServiceName string
 	binlogs        []string
 	gtidSet        string
 	startGTID      string
@@ -37,9 +37,9 @@ type Recoverer struct {
 }
 
 type Config struct {
-	PXCServiceName     string `env:"PXC_SERVICE,required"`
-	PXCUser            string `env:"PXC_USER,required"`
-	PXCPass            string `env:"PXC_PASS,required"`
+	Host               string `env:"HOST,required"`
+	User               string `env:"USER,required"`
+	Pass               string `env:"PASS,required"`
 	BackupStorageS3    BackupS3
 	BackupStorageAzure BackupAzure
 	RecoverTime        string `env:"PITR_DATE"`
@@ -172,15 +172,15 @@ func New(ctx context.Context, c Config) (*Recoverer, error) {
 	}
 
 	return &Recoverer{
-		storage:        binlogStorage,
-		recoverTime:    c.RecoverTime,
-		pxcUser:        c.PXCUser,
-		pxcPass:        c.PXCPass,
-		pxcServiceName: c.PXCServiceName,
-		recoverType:    RecoverType(c.RecoverType),
-		startGTID:      startGTID,
-		gtid:           c.GTID,
-		verifyTLS:      c.VerifyTLS,
+		storage:     binlogStorage,
+		recoverTime: c.RecoverTime,
+		host:        c.Host,
+		user:        c.User,
+		pass:        c.Pass,
+		recoverType: RecoverType(c.RecoverType),
+		startGTID:   startGTID,
+		gtid:        c.GTID,
+		verifyTLS:   c.VerifyTLS,
 	}, nil
 }
 
@@ -265,13 +265,10 @@ const (
 )
 
 func (r *Recoverer) Run(ctx context.Context) error {
-	host, err := pxc.GetPXCFirstHost(ctx, r.pxcServiceName)
+	var err error
+	r.db, err = pxc.NewPXC(r.host, r.user, r.pass)
 	if err != nil {
-		return errors.Wrap(err, "get host")
-	}
-	r.db, err = pxc.NewPXC(host, r.pxcUser, r.pxcPass)
-	if err != nil {
-		return errors.Wrapf(err, "new manager with host %s", host)
+		return errors.Wrapf(err, "new manager with host %s", r.host)
 	}
 
 	err = r.setBinlogs(ctx)
@@ -312,7 +309,7 @@ func (r *Recoverer) recover(ctx context.Context) (err error) {
 		return errors.Wrap(err, "drop collector funcs")
 	}
 
-	err = os.Setenv("MYSQL_PWD", os.Getenv("PXC_PASS"))
+	err = os.Setenv("MYSQL_PWD", r.pass)
 	if err != nil {
 		return errors.Wrap(err, "set mysql pwd env var")
 	}
@@ -320,7 +317,7 @@ func (r *Recoverer) recover(ctx context.Context) (err error) {
 	mysqlStdin, binlogStdout := io.Pipe()
 	defer mysqlStdin.Close()
 
-	mysqlCmd := exec.CommandContext(ctx, "mysql", "-h", r.db.GetHost(), "-P", "33062", "-u", r.pxcUser)
+	mysqlCmd := exec.CommandContext(ctx, "mysql", "-h", r.db.GetHost(), "-P", "33062", "-u", r.user)
 	log.Printf("Running %s", mysqlCmd.String())
 	mysqlCmd.Stdin = mysqlStdin
 	mysqlCmd.Stderr = os.Stderr

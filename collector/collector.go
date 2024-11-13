@@ -25,16 +25,16 @@ type Collector struct {
 	db              *pxc.PXC
 	storage         storage.Storage
 	lastUploadedSet pxc.GTIDSet // last uploaded binary logs set
-	pxcServiceName  string      // k8s service name for PXC, its for get correct host for connection
-	pxcUser         string      // user for connection to PXC
-	pxcPass         string      // password for connection to PXC
+	hosts           []string
+	user            string // user for connection to the MySQL
+	pass            string // password for connection to the MySQL
 }
 
 type Config struct {
-	PXCServiceName     string `env:"PXC_SERVICE,required"`
-	PXCUser            string `env:"PXC_USER,required"`
-	PXCPass            string `env:"PXC_PASS,required"`
-	StorageType        string `env:"STORAGE_TYPE,required"`
+	Hosts              []string `env:"HOSTS,required"` // Only Primary cluster nodes are expected
+	User               string   `env:"USER,required"`
+	Pass               string   `env:"PASS,required"`
+	StorageType        string   `env:"STORAGE_TYPE,required"`
 	BackupStorageS3    BackupS3
 	BackupStorageAzure BackupAzure
 	BufferSize         int64   `env:"BUFFER_SIZE"`
@@ -94,9 +94,10 @@ func New(ctx context.Context, c Config) (*Collector, error) {
 	}
 
 	return &Collector{
-		storage:        s,
-		pxcUser:        c.PXCUser,
-		pxcServiceName: c.PXCServiceName,
+		storage: s,
+		hosts:   c.Hosts,
+		user:    c.User,
+		pass:    c.Pass,
 	}, nil
 }
 
@@ -136,24 +137,14 @@ func (c *Collector) lastGTIDSet(ctx context.Context, suffix string) (pxc.GTIDSet
 }
 
 func (c *Collector) newDB(ctx context.Context) error {
-	file, err := os.Open("/etc/mysql/mysql-users-secret/xtrabackup")
-	if err != nil {
-		return errors.Wrap(err, "open file")
-	}
-	pxcPass, err := io.ReadAll(file)
-	if err != nil {
-		return errors.Wrap(err, "read password")
-	}
-	c.pxcPass = string(pxcPass)
-
-	host, err := pxc.GetPXCOldestBinlogHost(ctx, c.pxcServiceName, c.pxcUser, c.pxcPass)
+	host, err := pxc.GetPXCOldestBinlogHost(ctx, c.hosts, c.user, c.pass)
 	if err != nil {
 		return errors.Wrap(err, "get host")
 	}
 
 	log.Println("Reading binlogs from pxc with hostname=", host)
 
-	c.db, err = pxc.NewPXC(host, c.pxcUser, c.pxcPass)
+	c.db, err = pxc.NewPXC(host, c.user, c.pass)
 	if err != nil {
 		return errors.Wrapf(err, "new manager with host %s", host)
 	}
@@ -446,8 +437,8 @@ func (c *Collector) manageBinlog(ctx context.Context, binlog pxc.Binlog) (err er
 	}
 
 	errBuf := &bytes.Buffer{}
-	cmd := exec.CommandContext(ctx, "mysqlbinlog", "-R", "-P", "33062", "--raw", "-h"+c.db.GetHost(), "-u"+c.pxcUser, binlog.Name)
-	cmd.Env = append(cmd.Env, "MYSQL_PWD="+c.pxcPass)
+	cmd := exec.CommandContext(ctx, "mysqlbinlog", "-R", "-P", "33062", "--raw", "-h"+c.db.GetHost(), "-u"+c.user, binlog.Name)
+	cmd.Env = append(cmd.Env, "MYSQL_PWD="+c.pass)
 	cmd.Dir = os.TempDir()
 	cmd.Stderr = errBuf
 
