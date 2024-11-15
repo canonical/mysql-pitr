@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/go-playground/validator/v10"
+	"gopkg.in/yaml.v3"
 	"log"
 	"os"
 	"os/signal"
@@ -18,14 +20,18 @@ import (
 
 func main() {
 	command := "collect"
+	var cfgPath string
 	if len(os.Args) > 1 {
 		command = os.Args[1]
+	}
+	if len(os.Args) > 2 {
+		cfgPath = os.Args[2]
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
 	switch command {
 	case "collect":
-		runCollector(ctx)
+		runCollector(ctx, cfgPath)
 	case "recover":
 		runRecoverer(ctx)
 	default:
@@ -34,8 +40,8 @@ func main() {
 	}
 }
 
-func runCollector(ctx context.Context) {
-	config, err := getCollectorConfig()
+func runCollector(ctx context.Context, cfgPath string) {
+	config, err := getCollectorConfig(cfgPath)
 	if err != nil {
 		log.Fatalln("ERROR: get config:", err)
 	}
@@ -79,23 +85,48 @@ func runRecoverer(ctx context.Context) {
 	}
 }
 
-func getCollectorConfig() (collector.Config, error) {
+func getCollectorConfig(cfgPath string) (collector.Config, error) {
 	cfg := collector.Config{}
-	err := env.Parse(&cfg)
-	switch cfg.StorageType {
-	case "s3":
+	cfg.SetDefaults()
+
+	if len(cfgPath) == 0 {
+		// Read from envs
+		if err := env.Parse(&cfg); err != nil {
+			return cfg, err
+		}
 		if err := env.Parse(&cfg.BackupStorageS3); err != nil {
 			return cfg, err
 		}
-	case "azure":
 		if err := env.Parse(&cfg.BackupStorageAzure); err != nil {
 			return cfg, err
 		}
-	default:
-		return cfg, errors.New("unknown STORAGE_TYPE")
+	} else {
+		// Read from yaml
+		cfgFile, err := os.ReadFile(cfgPath)
+		if err != nil {
+			return cfg, err
+		}
+		if err = yaml.Unmarshal(cfgFile, &cfg); err != nil {
+			return cfg, err
+		}
 	}
 
-	return cfg, err
+	v := validator.New()
+	if err := v.Struct(cfg); err != nil {
+		return cfg, err
+	}
+	if cfg.StorageType == "s3" {
+		if err := v.Struct(cfg.BackupStorageS3); err != nil {
+			return cfg, err
+		}
+	}
+	if cfg.StorageType == "azure" {
+		if err := v.Struct(cfg.BackupStorageAzure); err != nil {
+			return cfg, err
+		}
+	}
+
+	return cfg, nil
 }
 
 func getRecovererConfig() (recoverer.Config, error) {

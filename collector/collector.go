@@ -31,32 +31,32 @@ type Collector struct {
 }
 
 type Config struct {
-	Hosts              []string `env:"HOSTS,required"` // Only Primary cluster nodes are expected
-	User               string   `env:"USER,required"`
-	Pass               string   `env:"PASS,required"`
-	StorageType        string   `env:"STORAGE_TYPE,required"`
-	BackupStorageS3    BackupS3
-	BackupStorageAzure BackupAzure
-	BufferSize         int64   `env:"BUFFER_SIZE"`
-	CollectSpanSec     float64 `env:"COLLECT_SPAN_SEC" envDefault:"60"`
-	VerifyTLS          bool    `env:"VERIFY_TLS" envDefault:"true"`
-	TimeoutSeconds     float64 `env:"TIMEOUT_SECONDS" envDefault:"60"`
+	Hosts              []string    `env:"HOSTS" yaml:"hosts" validate:"required"` // Only Primary cluster nodes are expected
+	User               string      `env:"USER" yaml:"user" validate:"required"`
+	Pass               string      `env:"PASS" yaml:"pass" validate:"required"`
+	StorageType        string      `env:"STORAGE_TYPE" yaml:"storage_type" validate:"required,oneof=s3 azure"`
+	BackupStorageS3    BackupS3    `yaml:"s3" validate:"-"`    // Manually validated based on the StorageType
+	BackupStorageAzure BackupAzure `yaml:"azure" validate:"-"` // Manually validated based on the StorageType
+	BufferSize         int64       `env:"BUFFER_SIZE" yaml:"buffer_size"`
+	CollectSpanSec     float64     `env:"COLLECT_SPAN_SEC" yaml:"collect_span_sec" validate:"required"`
+	VerifyTLS          bool        `env:"VERIFY_TLS" yaml:"verify_tls" validate:"required"`
+	TimeoutSeconds     float64     `env:"TIMEOUT_SECONDS" yaml:"timeout_seconds" validate:"required"`
 }
 
 type BackupS3 struct {
-	Endpoint    string `env:"ENDPOINT" envDefault:"s3.amazonaws.com"`
-	AccessKeyID string `env:"ACCESS_KEY_ID,required"`
-	AccessKey   string `env:"SECRET_ACCESS_KEY,required"`
-	BucketURL   string `env:"S3_BUCKET_URL,required"`
-	Region      string `env:"DEFAULT_REGION,required"`
+	Endpoint    string `env:"ENDPOINT" yaml:"endpoint" validate:"required"` // Default value is set in the Config.SetDefaults()
+	AccessKeyID string `env:"ACCESS_KEY_ID" yaml:"access_key_id" validate:"required"`
+	AccessKey   string `env:"SECRET_ACCESS_KEY" yaml:"secret_access_key" validate:"required"`
+	BucketURL   string `env:"S3_BUCKET_URL" yaml:"bucket_url" validate:"required"`
+	Region      string `env:"DEFAULT_REGION" yaml:"default_region" validate:"required"`
 }
 
 type BackupAzure struct {
-	Endpoint      string `env:"AZURE_ENDPOINT,required"`
-	ContainerPath string `env:"AZURE_CONTAINER_PATH,required"`
-	StorageClass  string `env:"AZURE_STORAGE_CLASS"`
-	AccountName   string `env:"AZURE_STORAGE_ACCOUNT,required"`
-	AccountKey    string `env:"AZURE_ACCESS_KEY,required"`
+	Endpoint      string `env:"AZURE_ENDPOINT" yaml:"endpoint" validate:"required"`
+	ContainerPath string `env:"AZURE_CONTAINER_PATH" yaml:"container_path" validate:"required"`
+	StorageClass  string `env:"AZURE_STORAGE_CLASS" yaml:"storage_class"`
+	AccountName   string `env:"AZURE_STORAGE_ACCOUNT" yaml:"storage_account" validate:"required"`
+	AccountKey    string `env:"AZURE_ACCESS_KEY" yaml:"access_key" validate:"required"`
 }
 
 const (
@@ -99,6 +99,13 @@ func New(ctx context.Context, c Config) (*Collector, error) {
 		user:    c.User,
 		pass:    c.Pass,
 	}, nil
+}
+
+func (c *Config) SetDefaults() {
+	c.BackupStorageS3.Endpoint = "s3.amazonaws.com"
+	c.CollectSpanSec = 60
+	c.VerifyTLS = true
+	c.TimeoutSeconds = 60
 }
 
 func (c *Collector) Run(ctx context.Context) error {
