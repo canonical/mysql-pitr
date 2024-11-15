@@ -1,8 +1,8 @@
 package recoverer
 
 import (
-	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"log"
 	"net/url"
@@ -105,32 +105,6 @@ func New(ctx context.Context, c Config) (*Recoverer, error) {
 		return nil, errors.Wrap(err, "new binlog storage manager")
 	}
 
-	// Actual start GTID acquiring moved into Run function.
-	var startGTID string
-	if c.RecoverType == string(Transaction) {
-		gtidSplitted := strings.Split(startGTID, ":")
-		if len(gtidSplitted) != 2 {
-			return nil, errors.New("Invalid start gtidset provided")
-		}
-		lastSetIdx := 1
-		setSplitted := strings.Split(gtidSplitted[1], "-")
-		if len(setSplitted) == 1 {
-			lastSetIdx = 0
-		}
-		lastSet := setSplitted[lastSetIdx]
-		lastSetInt, err := strconv.ParseInt(lastSet, 10, 64)
-		if err != nil {
-			return nil, errors.Wrap(err, "failed to cast last set value to in")
-		}
-		transactionNum, err := strconv.ParseInt(strings.Split(c.GTID, ":")[1], 10, 64)
-		if err != nil {
-			return nil, errors.Wrap(err, "failed to parse transaction num to restore")
-		}
-		if transactionNum < lastSetInt {
-			return nil, errors.New("Can't restore to transaction before backup")
-		}
-	}
-
 	return &Recoverer{
 		storage:     binlogStorage,
 		recoverTime: c.RecoverTime,
@@ -196,16 +170,23 @@ func (r *Recoverer) Run(ctx context.Context) error {
 		return errors.Wrap(err, "get start GTID")
 	}
 
+	if r.recoverType == Transaction {
+		err = r.verifyTransactionInputGTID(ctx)
+		if err != nil {
+			return errors.Wrap(err, "verify transaction num to restore")
+		}
+	}
+
 	err = r.setBinlogs(ctx)
 	if err != nil {
 		return errors.Wrap(err, "get binlog list")
 	}
 
 	switch r.recoverType {
-	//case Skip:
-	//	r.recoverFlag = "--exclude-gtids=" + r.gtid
-	//case Transaction:
-	//	r.recoverFlag = "--exclude-gtids=" + r.gtidSet
+	case Skip:
+		r.recoverFlag = `--exclude-gtids="` + r.gtid + `"`
+	case Transaction:
+		r.recoverFlag = `--exclude-gtids="` + r.gtidSet + `"`
 	case Date:
 		r.recoverFlag = `--stop-datetime="` + r.recoverTime + `"`
 
@@ -300,102 +281,6 @@ func (r *Recoverer) recover(ctx context.Context) (err error) {
 	return nil
 }
 
-func getLastBackupGTID(ctx context.Context, sstInfo, xtrabackupInfo io.Reader) (string, error) {
-	sstContent, err := getDecompressedContent(ctx, sstInfo, "sst_info")
-	if err != nil {
-		return "", errors.Wrap(err, "get sst_info content")
-	}
-
-	xtrabackupContent, err := getDecompressedContent(ctx, xtrabackupInfo, "xtrabackup_info")
-	if err != nil {
-		return "", errors.Wrap(err, "get xtrabackup info content")
-	}
-
-	sstGTIDset, err := getGTIDFromSSTInfo(sstContent)
-	if err != nil {
-		return "", err
-	}
-	currGTID := strings.Split(sstGTIDset, ":")[0]
-
-	set, err := getSetFromXtrabackupInfo(currGTID, xtrabackupContent)
-	if err != nil {
-		return "", err
-	}
-
-	return currGTID + ":" + set, nil
-}
-
-func getSetFromXtrabackupInfo(gtid string, xtrabackupInfo []byte) (string, error) {
-	gtids, err := getGTIDFromXtrabackup(xtrabackupInfo)
-	if err != nil {
-		return "", errors.Wrap(err, "get gtid from xtrabackup info")
-	}
-	for _, v := range strings.Split(gtids, ",") {
-		valueSplitted := strings.Split(v, ":")
-		if valueSplitted[0] == gtid {
-			return valueSplitted[1], nil
-		}
-	}
-	return "", errors.New("can't find current gtid in xtrabackup file")
-}
-
-func getGTIDFromXtrabackup(content []byte) (string, error) {
-	sep := []byte("GTID of the last")
-	startIndex := bytes.Index(content, sep)
-	if startIndex == -1 {
-		return "", errors.New("no gtid data in backup")
-	}
-	newOut := content[startIndex+len(sep):]
-	e := bytes.Index(newOut, []byte("'\n"))
-	if e == -1 {
-		return "", errors.New("can't find gtid data in backup")
-	}
-
-	se := bytes.Index(newOut, []byte("'"))
-	set := newOut[se+1 : e]
-
-	return string(set), nil
-}
-
-func getGTIDFromSSTInfo(content []byte) (string, error) {
-	sep := []byte("galera-gtid=")
-	startIndex := bytes.Index(content, sep)
-	if startIndex == -1 {
-		return "", errors.New("no gtid data in backup")
-	}
-	newOut := content[startIndex+len(sep):]
-	e := bytes.Index(newOut, []byte("\n"))
-	if e == -1 {
-		return "", errors.New("can't find gtid data in backup")
-	}
-	return string(newOut[:e]), nil
-}
-
-func getDecompressedContent(ctx context.Context, infoObj io.Reader, filename string) ([]byte, error) {
-	tmpDir := os.TempDir()
-
-	cmd := exec.CommandContext(ctx, "xbstream", "-x", "--decompress")
-	cmd.Dir = tmpDir
-	cmd.Stdin = infoObj
-	var outb, errb bytes.Buffer
-	cmd.Stdout = &outb
-	cmd.Stderr = &errb
-	err := cmd.Run()
-	if err != nil {
-		return nil, errors.Wrapf(err, "xbstream cmd run. stderr: %s, stdout: %s", &errb, &outb)
-	}
-	if errb.Len() > 0 {
-		return nil, errors.Errorf("run xbstream error: %s", &errb)
-	}
-
-	decContent, err := os.ReadFile(tmpDir + "/" + filename)
-	if err != nil {
-		return nil, errors.Wrap(err, "read xtrabackup_info file")
-	}
-
-	return decContent, nil
-}
-
 func (r *Recoverer) setBinlogs(ctx context.Context) error {
 	list, err := r.storage.ListObjects(ctx, "binlog_")
 	if err != nil {
@@ -426,7 +311,7 @@ func (r *Recoverer) setBinlogs(ctx context.Context) error {
 				return errors.Wrapf(err, "check if '%s' is a subset of '%s", binlogGTIDSet, r.gtid)
 			}
 			if subResult != binlogGTIDSet {
-				set, err := getExtendGTIDSet(binlogGTIDSet, r.gtid)
+				set, err := r.getExtendGTIDSet(ctx, binlogGTIDSet, r.gtid)
 				if err != nil {
 					return errors.Wrap(err, "get gtid set for extend")
 				}
@@ -448,7 +333,7 @@ func (r *Recoverer) setBinlogs(ctx context.Context) error {
 		}
 	}
 	if len(binlogs) == 0 {
-		return errors.Errorf("no objects for prefix binlog_ or with gtid=%s", r.startGTID)
+		return errors.Errorf("no objects for prefix binlog_ or with gtid=%s", r.gtid)
 	}
 	reverse(binlogs)
 	r.binlogs = binlogs
@@ -456,30 +341,42 @@ func (r *Recoverer) setBinlogs(ctx context.Context) error {
 	return nil
 }
 
-func getExtendGTIDSet(gtidSet, gtid string) (string, error) {
+func (r *Recoverer) verifyTransactionInputGTID(ctx context.Context) error {
+	gtidSplit := strings.Split(r.gtid, ":")
+	if len(gtidSplit) != 2 || strings.Contains(gtidSplit[1], "-") {
+		return errors.New("bad transaction num format")
+	}
+	subResult, err := r.db.SubtractGTIDSet(ctx, r.startGTID, r.gtid)
+	if err != nil {
+		return errors.Wrap(err, "transaction num is malformed or gtid subtract query exception occurred")
+	}
+	if subResult != r.startGTID {
+		return errors.New("can't restore to the transaction before backup")
+	}
+	return nil
+}
+
+func (r *Recoverer) getExtendGTIDSet(ctx context.Context, gtidSet, gtid string) (string, error) {
 	if gtidSet == gtid {
 		return gtid, nil
 	}
 
-	s := strings.Split(gtidSet, ":")
-	if len(s) < 2 {
-		return "", errors.Errorf("incorrect source in gtid set %s", gtidSet)
+	if len(strings.Split(gtidSet, ",")) != 1 {
+		return "", errors.New("binlog contains multiple gtid records, can't exactly determine which to exclude")
 	}
 
-	eidx := 1
-	e := strings.Split(s[1], "-")
-	if len(e) == 1 {
-		eidx = 0
+	gtidSplit := strings.Split(gtid, ":")
+	gtidNum, err := strconv.ParseInt(gtidSplit[1], 10, 64)
+	if err != nil {
+		return "", errors.Wrap(err, "parse gtid transaction num")
 	}
 
-	gs := strings.Split(gtid, ":")
-	if len(gs) < 2 {
-		return "", errors.Errorf("incorrect source in gtid set %s", gtid)
+	excludeSet, err := r.db.SubtractGTIDSet(ctx, gtidSet, fmt.Sprintf("%s:1-%v", gtidSplit[0], gtidNum-1))
+	if err != nil {
+		return "", errors.Wrap(err, "failed to subtract gtid set")
 	}
 
-	es := strings.Split(gs[1], "-")
-
-	return gs[0] + ":" + es[0] + "-" + e[eidx], nil
+	return excludeSet, nil
 }
 
 func reverse(list []string) {
