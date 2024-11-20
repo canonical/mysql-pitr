@@ -16,7 +16,7 @@ import (
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	"github.com/pkg/errors"
 
-	api "github.com/percona/percona-xtradb-cluster-operator/pkg/apis/pxc/v1"
+	api "mysql-pitr-helper/pkg/apis/pxc/v1"
 )
 
 var ErrObjectNotFound = errors.New("object not found")

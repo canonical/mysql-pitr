@@ -9,7 +9,7 @@ import (
 	k8sversion "k8s.io/apimachinery/pkg/version"
 	"k8s.io/client-go/rest"
 
-	"github.com/percona/percona-xtradb-cluster-operator/clientcmd"
+	"mysql-pitr-helper/clientcmd"
 )
 
 var (

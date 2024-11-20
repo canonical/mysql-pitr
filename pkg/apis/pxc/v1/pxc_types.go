@@ -21,9 +21,9 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/percona/percona-xtradb-cluster-operator/pkg/pxc/users"
-	"github.com/percona/percona-xtradb-cluster-operator/pkg/util"
-	"github.com/percona/percona-xtradb-cluster-operator/version"
+	"mysql-pitr-helper/pkg/pxc/users"
+	"mysql-pitr-helper/pkg/util"
+	"mysql-pitr-helper/version"
 )
 
 // PerconaXtraDBClusterSpec defines the desired state of PerconaXtraDBCluster
