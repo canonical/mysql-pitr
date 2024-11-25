@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"log"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -256,16 +257,17 @@ func FilterHealthyClusterMembers(ctx context.Context, hosts []string, user, pass
 			log.Printf("ERROR: get healthy cluster members for host %s: %v", host, err)
 			continue
 		}
+		if len(healthyMembers) == 0 {
+			return nil, errors.New("no healthy cluster members detected")
+		}
 		var res []string
 		for _, rawHost := range hosts[i:] {
-			for _, healthyMember := range healthyMembers {
-				if rawHost == healthyMember {
-					res = append(res, rawHost)
-				}
+			if slices.Contains(healthyMembers, rawHost) {
+				res = append(res, rawHost)
 			}
 		}
 		if len(res) == 0 {
-			return nil, errors.New("no healthy cluster members detected")
+			return nil, errors.New("no healthy cluster members found in provided hosts")
 		}
 		return res, nil
 	}
