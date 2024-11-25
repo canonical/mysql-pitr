@@ -245,33 +245,36 @@ func (p *PXC) GetHealthyClusterMembers(ctx context.Context) ([]string, error) {
 }
 
 func FilterHealthyClusterMembers(ctx context.Context, hosts []string, user, pass string) ([]string, error) {
-	for i, host := range hosts {
+	var healthyMembers []string
+	for _, host := range hosts {
 		db, err := NewPXC(host, user, pass)
 		if err != nil {
 			log.Printf("ERROR: creating connection for host %s: %v", host, err)
 			continue
 		}
-		healthyMembers, err := db.GetHealthyClusterMembers(ctx)
+		healthyMembers, err = db.GetHealthyClusterMembers(ctx)
 		db.Close()
 		if err != nil {
 			log.Printf("ERROR: get healthy cluster members for host %s: %v", host, err)
 			continue
 		}
-		if len(healthyMembers) == 0 {
-			return nil, errors.New("no healthy cluster members detected")
+		if len(healthyMembers) != 0 {
+			break
 		}
-		var res []string
-		for _, rawHost := range hosts[i:] {
-			if slices.Contains(healthyMembers, rawHost) {
-				res = append(res, rawHost)
-			}
-		}
-		if len(res) == 0 {
-			return nil, errors.New("no healthy cluster members found in provided hosts")
-		}
-		return res, nil
 	}
-	return nil, errors.New("no host accepted connection")
+	if len(healthyMembers) == 0 {
+		return nil, errors.New("no healthy cluster members detected")
+	}
+	var healthyHosts []string
+	for _, host := range hosts {
+		if slices.Contains(healthyMembers, host) {
+			healthyHosts = append(healthyHosts, host)
+		}
+	}
+	if len(healthyHosts) == 0 {
+		return nil, errors.New("no healthy cluster members found in provided hosts")
+	}
+	return healthyHosts, nil
 }
 
 func GetPXCOldestBinlogHost(ctx context.Context, hosts []string, user, pass string) (string, error) {
