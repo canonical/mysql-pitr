@@ -224,6 +224,54 @@ func (p *PXC) SubtractGTIDSet(ctx context.Context, set, subSet string) (string, 
 	return result, nil
 }
 
+func (p *PXC) GetHealthyClusterMembers(ctx context.Context) ([]string, error) {
+	rows, err := p.db.QueryContext(ctx, "SELECT MEMBER_HOST FROM performance_schema.replication_group_members WHERE MEMBER_STATE = 'ONLINE'")
+	if err != nil {
+		return nil, errors.Wrap(err, "select replication_group_members")
+	}
+	defer rows.Close()
+
+	var hosts []string
+	for rows.Next() {
+		var host string
+		if err = rows.Scan(&host); err != nil {
+			return nil, errors.Wrap(err, "scan host")
+		}
+		hosts = append(hosts, host)
+	}
+
+	return hosts, nil
+}
+
+func FilterHealthyClusterMembers(ctx context.Context, hosts []string, user, pass string) ([]string, error) {
+	for i, host := range hosts {
+		db, err := NewPXC(host, user, pass)
+		if err != nil {
+			log.Printf("ERROR: creating connection for host %s: %v", host, err)
+			continue
+		}
+		healthyMembers, err := db.GetHealthyClusterMembers(ctx)
+		db.Close()
+		if err != nil {
+			log.Printf("ERROR: get healthy cluster members for host %s: %v", host, err)
+			continue
+		}
+		var res []string
+		for _, rawHost := range hosts[i:] {
+			for _, healthyMember := range healthyMembers {
+				if rawHost == healthyMember {
+					res = append(res, rawHost)
+				}
+			}
+		}
+		if len(res) == 0 {
+			return nil, errors.New("no healthy cluster members detected")
+		}
+		return res, nil
+	}
+	return nil, errors.New("no host accepted connection")
+}
+
 func GetPXCOldestBinlogHost(ctx context.Context, hosts []string, user, pass string) (string, error) {
 	var oldestHost string
 	var oldestTS int64

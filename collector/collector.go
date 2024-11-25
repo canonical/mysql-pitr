@@ -137,7 +137,12 @@ func (c *Collector) lastGTIDSet(ctx context.Context, suffix string) (pxc.GTIDSet
 }
 
 func (c *Collector) newDB(ctx context.Context) error {
-	host, err := pxc.GetPXCOldestBinlogHost(ctx, c.hosts, c.user, c.pass)
+	healthyHosts, err := pxc.FilterHealthyClusterMembers(ctx, c.hosts, c.user, c.pass)
+	if err != nil {
+		return errors.Wrap(err, "filter healthy cluster members")
+	}
+
+	host, err := pxc.GetPXCOldestBinlogHost(ctx, healthyHosts, c.user, c.pass)
 	if err != nil {
 		return errors.Wrap(err, "get host")
 	}
