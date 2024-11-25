@@ -15,8 +15,6 @@ import (
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	"github.com/pkg/errors"
-
-	api "mysql-pitr-helper/pkg/apis/pxc/v1"
 )
 
 var ErrObjectNotFound = errors.New("object not found")
@@ -34,13 +32,13 @@ type NewClientFunc func(context.Context, Options) (Storage, error)
 
 func NewClient(ctx context.Context, opts Options) (Storage, error) {
 	switch opts.Type() {
-	case api.BackupStorageS3:
+	case BackupStorageS3:
 		opts, ok := opts.(*S3Options)
 		if !ok {
 			return nil, errors.New("invalid options type")
 		}
 		return NewS3(ctx, opts.Endpoint, opts.AccessKeyID, opts.SecretAccessKey, opts.BucketName, opts.Prefix, opts.Region, opts.VerifyTLS)
-	case api.BackupStorageAzure:
+	case BackupStorageAzure:
 		opts, ok := opts.(*AzureOptions)
 		if !ok {
 			return nil, errors.New("invalid options type")

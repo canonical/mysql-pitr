@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"mysql-pitr-helper/pkg/pxc/backup/storage"
 	"mysql-pitr-helper/pxc"
+	"mysql-pitr-helper/storage"
 
 	"github.com/pkg/errors"
 )
