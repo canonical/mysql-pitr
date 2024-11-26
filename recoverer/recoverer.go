@@ -1,14 +1,13 @@
 package recoverer
 
 import (
-	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"log"
 	"net/url"
 	"os"
 	"os/exec"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -40,8 +39,6 @@ type Config struct {
 	Host               string `env:"HOST,required"`
 	User               string `env:"USER,required"`
 	Pass               string `env:"PASS,required"`
-	BackupStorageS3    BackupS3
-	BackupStorageAzure BackupAzure
 	RecoverTime        string `env:"PITR_DATE"`
 	RecoverType        string `env:"PITR_RECOVERY_TYPE,required"`
 	GTID               string `env:"PITR_GTID"`
@@ -51,60 +48,29 @@ type Config struct {
 	BinlogStorageAzure BinlogAzure
 }
 
-func (c Config) storages(ctx context.Context) (storage.Storage, storage.Storage, error) {
-	var binlogStorage, defaultStorage storage.Storage
+func (c Config) storage(ctx context.Context) (storage.Storage, error) {
+	var binlogStorage storage.Storage
 	switch c.StorageType {
 	case "s3":
 		bucket, prefix, err := getBucketAndPrefix(c.BinlogStorageS3.BucketURL)
 		if err != nil {
-			return nil, nil, errors.Wrap(err, "get bucket and prefix")
+			return nil, errors.Wrap(err, "get bucket and prefix")
 		}
 		binlogStorage, err = storage.NewS3(ctx, c.BinlogStorageS3.Endpoint, c.BinlogStorageS3.AccessKeyID, c.BinlogStorageS3.AccessKey, bucket, prefix, c.BinlogStorageS3.Region, c.VerifyTLS)
 		if err != nil {
-			return nil, nil, errors.Wrap(err, "new s3 storage")
-		}
-
-		bucket, prefix, err = getBucketAndPrefix(c.BackupStorageS3.BackupDest)
-		if err != nil {
-			return nil, nil, errors.Wrap(err, "get bucket and prefix")
-		}
-		prefix = prefix[:len(prefix)-1]
-		defaultStorage, err = storage.NewS3(ctx, c.BackupStorageS3.Endpoint, c.BackupStorageS3.AccessKeyID, c.BackupStorageS3.AccessKey, bucket, prefix+".sst_info/", c.BackupStorageS3.Region, c.VerifyTLS)
-		if err != nil {
-			return nil, nil, errors.Wrap(err, "new storage manager")
+			return nil, errors.Wrap(err, "new s3 storage")
 		}
 	case "azure":
 		var err error
 		container, prefix := getContainerAndPrefix(c.BinlogStorageAzure.ContainerPath)
 		binlogStorage, err = storage.NewAzure(c.BinlogStorageAzure.AccountName, c.BinlogStorageAzure.AccountKey, c.BinlogStorageAzure.Endpoint, container, prefix)
 		if err != nil {
-			return nil, nil, errors.Wrap(err, "new azure storage")
-		}
-		defaultStorage, err = storage.NewAzure(c.BackupStorageAzure.AccountName, c.BackupStorageAzure.AccountKey, c.BackupStorageAzure.Endpoint, c.BackupStorageAzure.ContainerName, c.BackupStorageAzure.BackupDest+".sst_info/")
-		if err != nil {
-			return nil, nil, errors.Wrap(err, "new azure storage")
+			return nil, errors.Wrap(err, "new azure storage")
 		}
 	default:
-		return nil, nil, errors.New("unknown STORAGE_TYPE")
+		return nil, errors.New("unknown STORAGE_TYPE")
 	}
-	return binlogStorage, defaultStorage, nil
-}
-
-type BackupS3 struct {
-	Endpoint    string `env:"ENDPOINT" envDefault:"s3.amazonaws.com"`
-	AccessKeyID string `env:"ACCESS_KEY_ID,required"`
-	AccessKey   string `env:"SECRET_ACCESS_KEY,required"`
-	Region      string `env:"DEFAULT_REGION,required"`
-	BackupDest  string `env:"S3_BUCKET_URL,required"`
-}
-
-type BackupAzure struct {
-	Endpoint      string `env:"AZURE_ENDPOINT,required"`
-	ContainerName string `env:"AZURE_CONTAINER_NAME,required"`
-	StorageClass  string `env:"AZURE_STORAGE_CLASS"`
-	AccountName   string `env:"AZURE_STORAGE_ACCOUNT,required"`
-	AccountKey    string `env:"AZURE_ACCESS_KEY,required"`
-	BackupDest    string `env:"BACKUP_PATH,required"`
+	return binlogStorage, nil
 }
 
 type BinlogS3 struct {
@@ -124,9 +90,6 @@ type BinlogAzure struct {
 }
 
 func (c *Config) Verify() {
-	if len(c.BackupStorageS3.Endpoint) == 0 {
-		c.BackupStorageS3.Endpoint = "s3.amazonaws.com"
-	}
 	if len(c.BinlogStorageS3.Endpoint) == 0 {
 		c.BinlogStorageS3.Endpoint = "s3.amazonaws.com"
 	}
@@ -137,38 +100,9 @@ type RecoverType string
 func New(ctx context.Context, c Config) (*Recoverer, error) {
 	c.Verify()
 
-	binlogStorage, storage, err := c.storages(ctx)
+	binlogStorage, err := c.storage(ctx)
 	if err != nil {
 		return nil, errors.Wrap(err, "new binlog storage manager")
-	}
-
-	startGTID, err := getStartGTIDSet(ctx, storage)
-	if err != nil {
-		return nil, errors.Wrap(err, "get start GTID")
-	}
-
-	if c.RecoverType == string(Transaction) {
-		gtidSplitted := strings.Split(startGTID, ":")
-		if len(gtidSplitted) != 2 {
-			return nil, errors.New("Invalid start gtidset provided")
-		}
-		lastSetIdx := 1
-		setSplitted := strings.Split(gtidSplitted[1], "-")
-		if len(setSplitted) == 1 {
-			lastSetIdx = 0
-		}
-		lastSet := setSplitted[lastSetIdx]
-		lastSetInt, err := strconv.ParseInt(lastSet, 10, 64)
-		if err != nil {
-			return nil, errors.Wrap(err, "failed to cast last set value to in")
-		}
-		transactionNum, err := strconv.ParseInt(strings.Split(c.GTID, ":")[1], 10, 64)
-		if err != nil {
-			return nil, errors.Wrap(err, "failed to parse transaction num to restore")
-		}
-		if transactionNum < lastSetInt {
-			return nil, errors.New("Can't restore to transaction before backup")
-		}
 	}
 
 	return &Recoverer{
@@ -178,7 +112,6 @@ func New(ctx context.Context, c Config) (*Recoverer, error) {
 		user:        c.User,
 		pass:        c.Pass,
 		recoverType: RecoverType(c.RecoverType),
-		startGTID:   startGTID,
 		gtid:        c.GTID,
 		verifyTLS:   c.VerifyTLS,
 	}, nil
@@ -218,45 +151,6 @@ func getBucketAndPrefix(bucketURL string) (bucket string, prefix string, err err
 	return bucket, prefix, err
 }
 
-func getStartGTIDSet(ctx context.Context, s storage.Storage) (string, error) {
-	sstInfo, err := s.ListObjects(ctx, "sst_info")
-	if err != nil {
-		return "", errors.Wrapf(err, "list objects")
-	}
-	if len(sstInfo) == 0 {
-		return "", errors.New("no info files in sst dir")
-	}
-	sort.Strings(sstInfo)
-
-	sstInfoObj, err := s.GetObject(ctx, sstInfo[0])
-	if err != nil {
-		return "", errors.Wrapf(err, "get object")
-	}
-	defer sstInfoObj.Close()
-
-	s.SetPrefix(strings.TrimSuffix(s.GetPrefix(), ".sst_info/") + "/")
-	xtrabackupInfo, err := s.ListObjects(ctx, "xtrabackup_info")
-	if err != nil {
-		return "", errors.Wrapf(err, "list objects")
-	}
-	if len(xtrabackupInfo) == 0 {
-		return "", errors.New("no info files in backup")
-	}
-	sort.Strings(xtrabackupInfo)
-
-	xtrabackupInfoObj, err := s.GetObject(ctx, xtrabackupInfo[0])
-	if err != nil {
-		return "", errors.Wrapf(err, "get object")
-	}
-
-	lastGTID, err := getLastBackupGTID(ctx, sstInfoObj, xtrabackupInfoObj)
-	if err != nil {
-		return "", errors.Wrap(err, "get last backup gtid")
-	}
-
-	return lastGTID, nil
-}
-
 const (
 	Latest      RecoverType = "latest"      // recover to the latest existing binlog
 	Date        RecoverType = "date"        // recover to exact date
@@ -271,6 +165,18 @@ func (r *Recoverer) Run(ctx context.Context) error {
 		return errors.Wrapf(err, "new manager with host %s", r.host)
 	}
 
+	r.startGTID, err = r.db.GetCurrentGTIDSet(ctx)
+	if err != nil {
+		return errors.Wrap(err, "get start GTID")
+	}
+
+	if r.recoverType == Transaction {
+		err = r.verifyTransactionInputGTID(ctx)
+		if err != nil {
+			return errors.Wrap(err, "verify transaction num to restore")
+		}
+	}
+
 	err = r.setBinlogs(ctx)
 	if err != nil {
 		return errors.Wrap(err, "get binlog list")
@@ -278,9 +184,9 @@ func (r *Recoverer) Run(ctx context.Context) error {
 
 	switch r.recoverType {
 	case Skip:
-		r.recoverFlag = "--exclude-gtids=" + r.gtid
+		r.recoverFlag = `--exclude-gtids="` + r.gtid + `"`
 	case Transaction:
-		r.recoverFlag = "--exclude-gtids=" + r.gtidSet
+		r.recoverFlag = `--exclude-gtids="` + r.gtidSet + `"`
 	case Date:
 		r.recoverFlag = `--stop-datetime="` + r.recoverTime + `"`
 
@@ -375,102 +281,6 @@ func (r *Recoverer) recover(ctx context.Context) (err error) {
 	return nil
 }
 
-func getLastBackupGTID(ctx context.Context, sstInfo, xtrabackupInfo io.Reader) (string, error) {
-	sstContent, err := getDecompressedContent(ctx, sstInfo, "sst_info")
-	if err != nil {
-		return "", errors.Wrap(err, "get sst_info content")
-	}
-
-	xtrabackupContent, err := getDecompressedContent(ctx, xtrabackupInfo, "xtrabackup_info")
-	if err != nil {
-		return "", errors.Wrap(err, "get xtrabackup info content")
-	}
-
-	sstGTIDset, err := getGTIDFromSSTInfo(sstContent)
-	if err != nil {
-		return "", err
-	}
-	currGTID := strings.Split(sstGTIDset, ":")[0]
-
-	set, err := getSetFromXtrabackupInfo(currGTID, xtrabackupContent)
-	if err != nil {
-		return "", err
-	}
-
-	return currGTID + ":" + set, nil
-}
-
-func getSetFromXtrabackupInfo(gtid string, xtrabackupInfo []byte) (string, error) {
-	gtids, err := getGTIDFromXtrabackup(xtrabackupInfo)
-	if err != nil {
-		return "", errors.Wrap(err, "get gtid from xtrabackup info")
-	}
-	for _, v := range strings.Split(gtids, ",") {
-		valueSplitted := strings.Split(v, ":")
-		if valueSplitted[0] == gtid {
-			return valueSplitted[1], nil
-		}
-	}
-	return "", errors.New("can't find current gtid in xtrabackup file")
-}
-
-func getGTIDFromXtrabackup(content []byte) (string, error) {
-	sep := []byte("GTID of the last")
-	startIndex := bytes.Index(content, sep)
-	if startIndex == -1 {
-		return "", errors.New("no gtid data in backup")
-	}
-	newOut := content[startIndex+len(sep):]
-	e := bytes.Index(newOut, []byte("'\n"))
-	if e == -1 {
-		return "", errors.New("can't find gtid data in backup")
-	}
-
-	se := bytes.Index(newOut, []byte("'"))
-	set := newOut[se+1 : e]
-
-	return string(set), nil
-}
-
-func getGTIDFromSSTInfo(content []byte) (string, error) {
-	sep := []byte("galera-gtid=")
-	startIndex := bytes.Index(content, sep)
-	if startIndex == -1 {
-		return "", errors.New("no gtid data in backup")
-	}
-	newOut := content[startIndex+len(sep):]
-	e := bytes.Index(newOut, []byte("\n"))
-	if e == -1 {
-		return "", errors.New("can't find gtid data in backup")
-	}
-	return string(newOut[:e]), nil
-}
-
-func getDecompressedContent(ctx context.Context, infoObj io.Reader, filename string) ([]byte, error) {
-	tmpDir := os.TempDir()
-
-	cmd := exec.CommandContext(ctx, "xbstream", "-x", "--decompress")
-	cmd.Dir = tmpDir
-	cmd.Stdin = infoObj
-	var outb, errb bytes.Buffer
-	cmd.Stdout = &outb
-	cmd.Stderr = &errb
-	err := cmd.Run()
-	if err != nil {
-		return nil, errors.Wrapf(err, "xbstream cmd run. stderr: %s, stdout: %s", &errb, &outb)
-	}
-	if errb.Len() > 0 {
-		return nil, errors.Errorf("run xbstream error: %s", &errb)
-	}
-
-	decContent, err := os.ReadFile(tmpDir + "/" + filename)
-	if err != nil {
-		return nil, errors.Wrap(err, "read xtrabackup_info file")
-	}
-
-	return decContent, nil
-}
-
 func (r *Recoverer) setBinlogs(ctx context.Context) error {
 	list, err := r.storage.ListObjects(ctx, "binlog_")
 	if err != nil {
@@ -478,7 +288,6 @@ func (r *Recoverer) setBinlogs(ctx context.Context) error {
 	}
 	reverse(list)
 	binlogs := []string{}
-	sourceID := strings.Split(r.startGTID, ":")[0]
 	log.Println("current gtid set is", r.startGTID)
 	for _, binlog := range list {
 		if strings.Contains(binlog, "-gtid-set") {
@@ -502,7 +311,7 @@ func (r *Recoverer) setBinlogs(ctx context.Context) error {
 				return errors.Wrapf(err, "check if '%s' is a subset of '%s", binlogGTIDSet, r.gtid)
 			}
 			if subResult != binlogGTIDSet {
-				set, err := getExtendGTIDSet(binlogGTIDSet, r.gtid)
+				set, err := r.getExtendGTIDSet(ctx, binlogGTIDSet, r.gtid)
 				if err != nil {
 					return errors.Wrap(err, "get gtid set for extend")
 				}
@@ -524,7 +333,7 @@ func (r *Recoverer) setBinlogs(ctx context.Context) error {
 		}
 	}
 	if len(binlogs) == 0 {
-		return errors.Errorf("no objects for prefix binlog_ or with source_id=%s", sourceID)
+		return errors.Errorf("no objects for prefix binlog_ or with gtid=%s", r.gtid)
 	}
 	reverse(binlogs)
 	r.binlogs = binlogs
@@ -532,30 +341,42 @@ func (r *Recoverer) setBinlogs(ctx context.Context) error {
 	return nil
 }
 
-func getExtendGTIDSet(gtidSet, gtid string) (string, error) {
+func (r *Recoverer) verifyTransactionInputGTID(ctx context.Context) error {
+	gtidSplit := strings.Split(r.gtid, ":")
+	if len(gtidSplit) != 2 || strings.Contains(gtidSplit[1], "-") {
+		return errors.New("bad transaction num format")
+	}
+	subResult, err := r.db.SubtractGTIDSet(ctx, r.startGTID, r.gtid)
+	if err != nil {
+		return errors.Wrap(err, "transaction num is malformed or gtid subtract query exception occurred")
+	}
+	if subResult != r.startGTID {
+		return errors.New("can't restore to the transaction before backup")
+	}
+	return nil
+}
+
+func (r *Recoverer) getExtendGTIDSet(ctx context.Context, gtidSet, gtid string) (string, error) {
 	if gtidSet == gtid {
 		return gtid, nil
 	}
 
-	s := strings.Split(gtidSet, ":")
-	if len(s) < 2 {
-		return "", errors.Errorf("incorrect source in gtid set %s", gtidSet)
+	if len(strings.Split(gtidSet, ",")) != 1 {
+		return "", errors.New("binlog contains multiple gtid records, can't exactly determine which to exclude")
 	}
 
-	eidx := 1
-	e := strings.Split(s[1], "-")
-	if len(e) == 1 {
-		eidx = 0
+	gtidSplit := strings.Split(gtid, ":")
+	gtidNum, err := strconv.ParseInt(gtidSplit[1], 10, 64)
+	if err != nil {
+		return "", errors.Wrap(err, "parse gtid transaction num")
 	}
 
-	gs := strings.Split(gtid, ":")
-	if len(gs) < 2 {
-		return "", errors.Errorf("incorrect source in gtid set %s", gtid)
+	excludeSet, err := r.db.SubtractGTIDSet(ctx, gtidSet, fmt.Sprintf("%s:1-%v", gtidSplit[0], gtidNum-1))
+	if err != nil {
+		return "", errors.Wrap(err, "failed to subtract gtid set")
 	}
 
-	es := strings.Split(gs[1], "-")
-
-	return gs[0] + ":" + es[0] + "-" + e[eidx], nil
+	return excludeSet, nil
 }
 
 func reverse(list []string) {

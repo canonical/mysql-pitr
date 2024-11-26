@@ -214,6 +214,17 @@ func (p *PXC) GetBinLogLastTimestamp(ctx context.Context, binlog string) (string
 	return timestamp, nil
 }
 
+func (p *PXC) GetCurrentGTIDSet(ctx context.Context) (string, error) {
+	var result string
+	row := p.db.QueryRowContext(ctx, "SELECT @@GLOBAL.gtid_executed;")
+	err := row.Scan(&result)
+	if err != nil {
+		return "", errors.Wrap(err, "scan current gtid_executed result")
+	}
+
+	return result, nil
+}
+
 func (p *PXC) SubtractGTIDSet(ctx context.Context, set, subSet string) (string, error) {
 	var result string
 	row := p.db.QueryRowContext(ctx, "SELECT GTID_SUBTRACT(?,?)", set, subSet)
